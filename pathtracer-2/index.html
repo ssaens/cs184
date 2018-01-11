@@ -1,0 +1,419 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+    <style>
+        body {
+            padding: 100px;
+            width: 1000px;
+            margin: auto;
+            text-align: left;
+            font-weight: 300;
+            font-family: 'Open Sans', sans-serif;
+            color: #121212;
+        }
+
+        h1, h2, h3, h4 {
+            font-family: 'Source Sans Pro', sans-serif;
+        }
+
+        figcaption {
+            align
+        }
+
+    </style>
+    <title>CS 184 Ray Tracer, Part 1</title>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8"/>
+    <link href="https://fonts.googleapis.com/css?family=Open+Sans|Source+Sans+Pro" rel="stylesheet">
+</head>
+
+<body>
+
+<h1 align="middle">CS 184: Computer Graphics and Imaging, Spring 2017</h1>
+<h1 align="middle">Project 3-2: Ray Tracer, Part 2</h1>
+<h2 align="middle">Dillon Yao, CS184-aai</h2>
+
+<br><br>
+
+<div>
+
+    <h2 align="middle">Overview</h2>
+    <p>In this project, I extended the path tracer created in part 1 to support several new features, including material
+        modeling, environment lighting, and depth of field, using importance sampling to increase the rate at which
+        pixels converge.</p>
+
+    <p>The specific material BSDFs added were glass, mirrors, and microfacet materials. Mirror materials were relatively straightforward, requiring just a reflection to sample directions. Glass and microfacet materials required more care, dealing with refraction through Snell's Law and Fresnel Terms. Importance sampling was implemented for microfacet BSDF to better accomidate the Bleckman NDF used to describe the normal distribution of the material, allowing faster convergence over normal cosine hemisphere sampling.</p>
+
+    <p>Environment Lighting, a light source that provides radiance from all directions in the sphere, was also implemented, allowing the realistic rendering of objects placed in an environment. To do this, we take samples over the environement light, using importance sampling to again allow for faster pixel convergence over uniformly sampling over the sphere.</p>
+
+    <p>Finally I was able to simulate depth of field by implementing a thin lens model to replace our pinhole camera model. Now, sampling over the lens' surface, we can create realistic camera effects, putting objects into focus and blurring others, able to fine tune both the focal distance and aperture radius of our lens.</p>
+
+    <h2 align="middle">Part 1: Mirror and Glass Materials</h2>
+
+    <p>Here I implemented the BSDFs for glass and mirror materials. For mirror materials, when sampling an incoming ray
+        direction, we simply reflect the outgoing ray direction over the surface normal using the equation <code>*wi =
+            Vector3D(-wo[0], -wo[1], wo[2])</code>, knowing that in object coordinates the normal is just <code>Vector3D(0,
+            0, 1)</code>. Because a perfect mirror will always direct light in that direction, so our pdf for the sample
+        is simple 1. Additionally, we also had to account for the fact that perfect mirrors aren't affected by
+        Lambertian fallout, dividing by a cosine term to cancel the multiplication by the cosine term for the Lambertian
+        falloff.</p>
+    <p>Glass materials were slightly trickier. Using snell's law, we can figure out which direction a ray should bend
+        upon being refracted given the index of refraction for the material as well as knowing whether or not the ray is
+        leaving the material or entering. If total internal reflection does not occur, then we know a given ray will
+        both be reflected and refracted. To account for this when sampling, we use Schlick's Approximation to give us a
+        probability of refracting (simplifying the Fresnel Reflection model given by the Fresnel Equations). The following renderings were crated with <code>s = 1024, l = 4</code></p>
+
+    <div align="center">
+
+        <table style="width: 100%">
+            <tr>
+                <td align="middle">
+                    <img src="images/part1/CBspheres_s1024_l4_m0.png" width="480px"/>
+                    <figcaption align="middle"><code>m = 0</code></figcaption>
+                </td>
+                <td style="padding-left: 50px">
+                    <p>With <code>m = 0</code>, all we see is direct lighting. Because both sphere's implement bsdf's
+                        where an arbitrarily sampled light direction has essentially a 0 probability of hitting the
+                        light given the sphere's properties (<code>GlassBSDF::f and MirrorBSDF::f</code> always return
+                        <code>Spectrum</code>), they are completely black.</p>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part1/CBspheres_s1024_l4_m1.png" width="480px"/>
+                    <figcaption align="middle"><code>m = 1</code></figcaption>
+                </td>
+                <td style="padding-left: 50px">
+                    <p>Allowing for one bounce allows us to view the mirror surface of the left sphere as now camera
+                        rays hitting the surface will be reflected and take the value of the location they hit. We also
+                        see this reflective effect on the glass sphere, most obviously at the top, though no refraction
+                        yet as the camera rays require another internal bounce before they can find a surface to sample.
+                        As in part 1, we also begin observing more soft shadows and color bleeding effects with a single
+                        bounce.</p>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part1/CBspheres_s1024_l4_m2.png" width="480px"/>
+                    <figcaption align="middle"><code>m = 2</code></figcaption>
+                </td>
+                <td style="padding-left: 50px">
+                    <p>Now having two bounces, camera rays hitting the surface of the glass sphere can be refracted once
+                        into the sphere and refracted a second time to escape the sphere, now able to sample a surface,
+                        modeling the glass material. The reflection of the glass sphere is still dark however as camera
+                        rays use up a bounce reflecting off the mirror sphere, requiring a third bounce to escape the
+                        glass sphere. We can however now see the reflected light off the glass sphere in the mirror
+                        sphere as the reflection only requires a single bounce.</p>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part1/CBspheres_s1024_l4_m3.png" width="480px"/>
+                    <figcaption align="middle"><code>m = 3</code></figcaption>
+                </td>
+                <td style="padding-left: 50px">
+                    <p>The most noticible change here comes from the light now shining through the glass sphere and
+                        focused on the floor beneath it. This is because now with another additional bounce, we can see
+                        light that indirectly reaches the camera after being refracted in the glass sphere, whereas
+                        before we could only measure light leaving the glass sphere to the camera directly. In addition,
+                        we can now see the glass sphere's reflection for the reasons highlighted before, however we
+                        still lag one behind the actual scene as we can't yet see the focused light on the floor
+                        reflected, a bounce having been used up on the reflection.</p>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part1/CBspheres_s1024_l4_m4.png" width="480px"/>
+                    <figcaption align="middle"><code>m = 4</code></figcaption>
+                </td>
+                <td style="padding-left: 50px">
+                    <p>Now the focused light on the floor's reflection can be seen in the mirror sphere. Additionally,
+                        we notice a second beam of light being focused on the blue wall, originating from light
+                        reflected from the mirror sphere, being refracted upon entry to the glass sphere, being
+                        refracted upon exit of the glass sphere, and bouncing off the blue wall to the camera, requiring
+                        4 bounces to be seen.</p>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part1/CBspheres_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle"><code>m = 5</code></figcaption>
+                </td>
+                <td style="padding-left: 50px">
+                    <p>There is little change between steps 4 and 5 as the scene begins to converge.</p>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part1/CBspheres_s1024_l4_m100.png" width="480px"/>
+                    <figcaption align="middle"><code>m = 100</code></figcaption>
+                </td>
+                <td style="padding-left: 50px">
+                    <p>Again there is very little change between a max depth of 5 and 100, the most noticeable
+                        difference being the additional subtle reflection of light off the top of the sphere.</p>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <p>Because much of this part was just transferring mathematical equations to code, I often found myself making minor
+        syntax errors like missing a negative sign or forgetting the order of operations. These lead to quite a few
+        headaches in debugging, but slowly and rigorously reviewing the code I had written squashed out all the bugs in
+        a reasonable time.</p>
+
+    <h2 align="middle">Part 2: Microfacet Material</h2>
+
+    <p>In Part 2, I implemented an additional BSDF for the Microfacet model. This allows us to render realistic
+        isotrophic conductors with variable roughness about them, giving a metallic sheen. The BSDF for a microfacet
+        material consists of many separate parts, the onces concerning us being a Fresnel term describing air-conductor
+        interactions, and a Normal Distribution Function describing how the material's normal vectors are distributed
+        (here we use the Beckmann distribution). Again, the majority of this part consisted of translating equations
+        into code.</p>
+
+    <p>Below we have renderings of the gold, microfacet materialed <code>CBdragon_microfacet_au.dae</code>. These were
+        rendered with 256 samples per pixel, 1 light sample, and a max ray depth of 5. We vary alpha(<code>a</code>),
+        the roughness of the material.</p>
+
+    <div align="center">
+
+        <table style="width: 100%">
+            <tr>
+                <td align="middle">
+                    <img src="images/part2/CBdragon_microfacet_au_a005_s256_l1_m5.png" width="480px">
+                    <figcaption align="middle"><code>a = 0.005</code></figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part2/CBdragon_microfacet_au_a05_s256_l1_m5.png" width="480px">
+                    <figcaption align="middle"><code>a = 0.05</code></figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part2/CBdragon_microfacet_au_a25_s256_l1_m5.png" width="480px">
+                    <figcaption align="middle"><code>a = 0.25</code></figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part2/CBdragon_microfacet_au_a5_s256_l1_m5.png" width="480px">
+                    <figcaption align="middle"><code>a = 0.5</code></figcaption>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <p>As alpha increases, we see that the material looks increasingly rough. At <code>a = 0.005</code>, the material
+        looks very reflective and polished, with almost a liquid quality, though does not seem to reflect much of the
+        area light overhead however. As we move to <code>a = 0.05</code>, we see that the area light's influence is much
+        more visible. While still very reflective, the dragon now looks slightly rougher, not as slick as the previous.
+        When we cross to <code>a = 0.25</code>, the roughness is very apparent now. Most of the reflective qualities
+        from before are gone, replaced by a golden sheen all over the body of the dragon. The effect is even more
+        apparent at <code>a = 0.5</code> where now essentially no clear reflections can be seen, the dragon now just
+        looking like a rough metal.</p>
+
+    <p>To speed up the convergence of the image, I implemented importance sampling according to the Beckmann
+        distribution alluded to above. To do so, I just evaluated the probability of sampling a given solid angle <code>wi</code>
+        using the provided probability distributions for the Beckmann NDF. The effects against normal cosine hemisphere
+        sampling are illustrated below <code>(s-64, l=1, m=5)</code>:</p>
+
+    <table style="width: 100%">
+        <tr>
+            <td align="middle">
+                <img src="images/part2/CBbunny_microfacet_cos_s64_l1_m5.png" width="480px">
+                <figcaption align="middle">cosine hemisphere sampling</figcaption>
+            </td>
+            <td align="middle">
+                <img src="images/part2/CBbunny_microfacet_imp_s64_l1_m5.png" width="480px">
+                <figcaption align="middle">importance sampling</figcaption>
+            </td>
+        </tr>
+    </table>
+
+    <p>With cosine sampling, it is easy to see that values have not yet converged, many black regions dotting the bunny.
+        In the render using importance sampling, we see that will the same number of samples, we get significantly less noise, especially on the body of the bunny, the values much closer to convergence with the same number of samples. We end up with a smooth, copper bunny.
+        Although cosine hemisphere sampling will eventually converge to the correct image, it is clear to see that
+        importance sampling provides a much quicker path to our desired rendered image.</p>
+
+    <p>Below, I demonstrate other a few examples of other conductors that may be rendered using the Microfacet model,
+        simply by changing their refractive indicies (<code>eta</code>) and extinction coefficients (<code>k</code>).
+        All renders were performed with <code>s= = 256, l = 1, m = 5</code>.</p>
+
+    <table style="width:100%">
+        <tr>
+            <td align="middle">
+                <img src="images/part2/CBdragon_microfacet_au_a05_s256_l1_m5.png" width="480px">
+            </td>
+            <td align="middle">
+                <img src="images/part2/CBdragon_microfacet_co_a05_s256_l4_m5.png" width="480px">
+            </td>
+        </tr>
+        <tr>
+            <td align="middle">
+                Provided Gold Conductor
+            </td>
+            <td align="middle">
+                Cobalt Conductor, <code>eta = <2.1849, 2.0500, 1.7925>, k = <4.0971, 3.8200, 3.3775></code>
+            </td>
+        </tr>
+        <tr>
+            <td align="middle">
+                <img src="images/part2/CBdragon_microfacet_pl_a05_s256_l4_m5.png" width="480px">
+            </td>
+            <td align="middle">
+                <img src="images/part2/CBdragon_microfacet_cr_a05_s256_l4_m5.png" width="480px">
+            </td>
+        </tr>
+        <tr>
+            <td align="middle">
+                Platinum Conductor, <code>eta = <0.46138, 0.46608, 0.58870>, k = <5.9022, 5.0942, 3.9742></code>
+            </td>
+            <td align="middle">
+                Chromium Conductor, <code>eta = <3.1743, 3.18, 2.465>, k = <3.33, 3.33, 3.215></code>
+            </td>
+        </tr>
+    </table>
+
+</div>
+
+<p>I remember I experienced an extremely frustrating error for quite some time where my conductor would be much too
+    noisy. Again the problem stemmed from forgetting a 2 term when dividing by <code>PI</code>, throwing off the pdf's
+    used in the importance sampling.</p>
+
+<h2 align="middle">Part 3: Environment Light</h2>
+
+<p>In part 3, I implemented support for environment lighting, where radiance can be supplied from all directions in the sphere. We simply sample a vector from the sphere over the desired environment image, using importance sampling to reduce noise, and take the sampled value as our radiance. Below we have the jpeg and probability debug output for <code>field.exr</code>:</p>
+
+<div align="center">
+    <img src="images/part3/field.jpg" width="1000px">
+    <img src="images/part3/field_debug.png" width="1000px">
+
+</div>
+
+<p>Using importance sampling, we can reduce the amount of noise we get, allowing pixels to converge more quickly. The differences between uniform sampling and importance sampling can be seen below:</p>
+
+    <table style="width: 100%">
+        <tr>
+            <td>
+                <img src="images/part3/CBbunny_unlit_uni_field_s4_l64.png" width="500px">
+                <figcaption align="middle">Uniform Sampling on <code>bunny_unlit.dae</code></figcaption>
+            </td>
+            <td>
+                <img src="images/part3/CBbunny_unlit_imp_field_s4_l64_m5.png" width="500px">
+                <figcaption align="middle">Importance Sampling on <code>bunny_unlit.dae</code></figcaption>
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="images/part3/CBbunny_microfacet_cu_unlit_uni_field_s4_l64_m5.png" width="500px">
+                <figcaption align="middle">Uniform Sampling on <code>bunny_microfacet_cu_unlit.dae</code></figcaption>
+            </td>
+            <td>
+                <img src="images/part3/CBbunny_microfacet_cu_unlit_imp_field_s4_l64_m5.png" width="500px">
+                <figcaption align="middle">Importance Sampling on <code>bunny_microfacet_cu_unlit.dae</code></figcaption>
+            </td>
+        </tr>
+    </table>
+
+<p>For this exr, it is a bit difficult to notice difference, but if we look closely at the pedestal in both the microfacet and diffuse bunny, there is slightly more variation in the spectra of the uniformly sampled image, especially near the base of the bunny in the microfacet image. The effect can be seen even more clearly using <code>ennis.exr</code>:</p>
+
+<img src="images/part3/ennis.jpg" width="1000px">
+<img src="images/part3/ennis_debug.png" width="1000px">
+
+    <table style="width: 100%">
+        <tr>
+            <td>
+                <img src="images/part3/bunny_ennis_uni_s4_l64_m5.png" width="500px">
+                <figcaption align="middle">Uniform Sampling on <code>bunny_unlit.dae</code></figcaption>
+            </td>
+            <td>
+                <img src="images/part3/bunny_ennis_imp_s4_l64_m5.png" width="500px">
+                <figcaption align="middle">Importance Sampling on <code>bunny_unlit.dae</code></figcaption>
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="images/part3/bunny_cu_ennis_uni_s4_l64_m5.png" width="500px">
+                <figcaption align="middle">Uniform Sampling on <code>bunny_microfacet_cu_unlit.dae</code></figcaption>
+            </td>
+            <td>
+                <img src="images/part3/bunny_cu_ennis_imp_s4_l64_m5.png" width="500px">
+                <figcaption align="middle">Importance Sampling on <code>bunny_microfacet_cu_unlit.dae</code></figcaption>
+            </td>
+        </tr>
+    </table>
+
+<p>Now it is much more clear the reduction in noise between the two sampling methods. In the pedestals, we see many more white dots present in the uniform sampling method over the importance sampling method. The difference is also easily seen in the shadows of the two images. With importance sampling, we see a much more realistic soft shadow for the bunny, while with uniform sampling, we have a harsh transition, the pixels not yet having sampled the lit portions of the environment light enough time to reflect the softness.</p>
+<p>In the bunnies themselves, we see in the non-microfacet model that the shadows on the bunny are also much more well defined with importance sampling, the roughness on the model easier to see whereas the pixels on the uniformly sampled bunny have yet to converge fully, some of these shadows not showing up at all. In the microfacet model, we see that there is much less reflected noise coming form the pedestal, although we see an increase of noise in the form of bright, copper colored specs on the bunny itself.</p>
+<p>Overall it is clear to see that importance sampling has greatly reduced the noise in the image using the same number of light samples as uniform sampling. I'm still not entirely sure if the noise in the second image is a bug or simply due to pixels reflecting smaller features in the specific environment light that the uniform sampling could not allow pixels to come near to converging to like the brown ceiling beams or yellow tiles near the window. Having checked every division for 0 errors, correcting the probability distribution, checking array access indices and so on, if it is a bug, I suspect it may stem from a different portion of the project or some minor equation that I've copied wrong, though seeing how the issue has not appeared in any other microfacet model or the other exr's I have rendered, I'm slightly inclined to entertain the possibility that the image is correct. Either way, after sinking an enourmous amount of time into fixing it, I have decided to just accept the bunny as it is, still clearly illustrating the superiority of importance sampling in reducing noise.</p>
+
+<h2 align="middle">Part 4: Depth of Field</h2>
+
+<p>In part 4, I added the ability for the pathtracer to model the effect of placing a thin lens infront of our old
+    camera, allowing the pathtracer to put objects in focus. With the lens, now the light contributing to the value of a
+    pixel no longer must come from a ray through the center of the lens, rather it can receive radiance from any point
+    on the thin lens, meaning we must now sample over the lens as well. From here, we can just leverage the fact that
+    the any point on the focus plane will map onto a single point on the image plane, using a ray passing through the
+    center of the lens to calculate this point as we know this ray will not change direction upon passing through the
+    lens.</p>
+
+<p>The results can be seen in the image below, taken with <code>s = 256, l = 4, m = 8</code>, an aperture radius of
+    0.0883883, and my platinum dragon:</p>
+
+<div align="center">
+
+    <table style="width: 100%">
+        <tr>
+            <td align="middle">
+                <img src="images/part4/CBdragon_microfacet_pl_fs_1_s256_l4_m8.png" width="500px">
+                <figcaption><code>focal_distance = 1.4</code></figcaption>
+            </td>
+            <td align="middle">
+                <img src="images/part4/CBdragon_microfacet_pl_fs_2_s256_l4_m8.png" width="500px">
+                <figcaption><code>focal_distance = 1.5</code></figcaption>
+            </td>
+        </tr>
+        <tr>
+            <td align="middle">
+                <img src="images/part4/CBdragon_microfacet_pl_fs_3_s256_l4_m8.png" width="500px">
+                <figcaption><code>focal_distance = 1.7</code></figcaption>
+            </td>
+            <td align="middle">
+                <img src="images/part4/CBdragon_microfacet_pl_fs_4_s256_l4_m8.png" width="500px">
+                <figcaption><code>focal_distance = 1.9</code></figcaption>
+            </td>
+        </tr>
+    </table>
+</div>
+
+<p>We can observe that as the focal distance increases, the focal plane moves further into the scene.</p>
+
+<p>We can also vary the aperture size. The following renders were done with the same settings as before, using a focal
+    distance of 1.4:</p>
+
+<table style="width: 100%">
+    <tr>
+        <td align="middle">
+            <img src="images/part4/CBdragon_microfacet_pl_ap25_s256_l4_m8.png" width="500px">
+            <figcaption><code>aperture_size = 0.25</code></figcaption>
+        </td>
+        <td align="middle">
+            <img src="images/part4/CBdragon_microfacet_pl_ap15_s256_l4_m8.png" width="500px">
+            <figcaption><code>aperture_size = 0.15</code></figcaption>
+        </td>
+    </tr>
+    <tr>
+        <td align="middle">
+            <img src="images/part4/CBdragon_microfacet_pl_ap0883883_s256_l4_m8.png" width="500px">
+            <figcaption><code>aperture_size = 0.0883883</code></figcaption>
+        </td>
+        <td align="middle">
+            <img src="images/part4/CBdragon_microfacet_pl_ap031250_s256_l4_m8.png" width="500px">
+            <figcaption><code>aperture_size = 0.031250</code></figcaption>
+        </td>
+    </tr>
+</table>
+
+<p>We can easily see that as the aperture size decreases, the circles of confusion become smaller as the acceptable
+    depth of view increases. As the aperture radius nears 0, more and more of the image becomes in focus. At a radius of
+    0, the model then is the same as a pinhole camera, which is what we had before.</p>
+
+</div>
+</body>
+</html>

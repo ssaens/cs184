@@ -1,0 +1,407 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+    <style>
+        body {
+            padding: 100px;
+            width: 1000px;
+            margin: auto;
+            text-align: left;
+            font-weight: 300;
+            font-family: 'Open Sans', sans-serif;
+            color: #121212;
+        }
+
+        h1, h2, h3, h4 {
+            font-family: 'Source Sans Pro', sans-serif;
+        }
+
+        figcaption {
+            text-align: center;
+            font-size: 0.9em;
+        }
+    </style>
+    <title>CS 184 Mesh Editor</title>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8"/>
+    <link href="https://fonts.googleapis.com/css?family=Open+Sans|Source+Sans+Pro" rel="stylesheet">
+</head>
+
+
+<body>
+
+<h1 align="middle">CS 184: Computer Graphics and Imaging, Spring 2017</h1>
+<h1 align="middle">Project 4: Cloth Simulator</h1>
+<h2 align="middle">Dillon Yao, CS184-aai</h2>
+
+<br><br>
+
+<div>
+
+    <h2 align="middle">Overview</h2>
+    <p>In this project, I have implemented a simple mass and spring based three dimensional cloth simulation that tries to realistically capture the motion of real cloth. Modeling the cloth as a grid of point masses, various constraints of cloth motion can be enforced, namely structural constraints, which keep the point masses generally where they should be, shearing constraints, which prevents the cloth from shearing, and bending constraints, which prevent the cloth from folding over itself on a row of point masses. To prevent the loss of control common with pure a Eurlearian model, the cloth is updated using Verlet integration, approximating motion fairly realistically. The cloth is able to collide with objects such as the sphere and plane, and with the speed up provided by partitoning the cloth masses into a spacial map, the cloth can simulate self-collisions as well so as to not fall through itself.</p>
+
+    <h2 align="middle">Part I: Masses and springs</h2>
+    <p>To begin, we first needed to create the cloth model using a grid of point masses and springs. Given the cloth parameters <code>num_width_points</code> and <code>num_height_points</code>, point masses are created evenly spaced over the height and width of the cloth. Springs are then placed over the appropriate point masses to enforce specific constraints. Structural springs for a point masses are connected to the point mass above and to the right, enforcing the grid structure of the cloth. Shearing springs for a point mass are connected to the point mass to the diagonal upper left and diagonal upper right, making sure the cloth doesn't shear and fold in on itself. Finally Benidng springs are placed from a point mass to the mass two to its right and two above so that the cloth doesn't bend too easily in the 3rd dimension. The resulting wireframe is shown below:</p>
+
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part1/all_constraints.png" width="500px">
+                <figcaption>All constraints</figcaption>
+            </td>
+            <td>
+                <img src="./img/part1/all_constraints_close.png" width="500px">
+                <figcaption>All constraints closeup</figcaption>
+            </td>
+        </tr>
+    </table>
+
+    <p>Below shows the cloth with and without the diagonal springs enforcing shearing constraints:</p>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part1/without_shearing.png" width="500px">
+                <figcaption>Without Shearing Constraints</figcaption>
+            </td>
+            <td>
+                <img src="./img/part1/only_shearing.png" width="500px">
+                <figcaption>Only Shearing Constraints</figcaption>
+            </td>
+        </tr>
+    </table>
+    <p></p>
+
+    <h2 align="middle">Part II: Verlet Integration</h2>
+
+    <p>In part two, using Verlet integration, we may simulate the motion of the cloth relatively realistically. First we accumulate all external forces like gravity for every point mass, and then using Hooke's law, accumulate all forces added by the springs. After this accumulation, we apply the following formula to update the positions of every point mass over a timestep <code>d_t</code> with current position <code>x_t</code>:</p>
+
+    <div align="middle"><code>x_{t + d_t} = x_t + (1 − damping) * (x_t − x_{t − d_t}) + F / m + (d_t)^2</code></div>
+
+    <p><code>F</code> above is the sum of accumulate forces for the point mass and <code>m</code> is the point mass's mass. To prevent over-deformation and the blowing up of parameters, springs stretched longer than 10% of their rest lengths are corrected so that their point masses are at most that distance apart. This allows for the cloth to moth fairly realistically as shown in the images below:</p>
+
+    <h3>Varying <code>ks</code></h3>
+    <p>Here we vary the spring constants, which tell us how much force the springs will exert given the distance from their rest length.</p>
+    <h4><code>ks = 500 N/m</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/pinned_2_500_w.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/pinned_2_500.png" width="500ox">
+            </td>
+        </tr>
+    </table>
+    <h4><code>ks = 5000 N/m</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/pinned_2_5000_w.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/pinned_2_5000.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <h4><code>ks = 50000 N/m</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/pinned_2_50000_w.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/pinned_2_50000.png" width="500px">
+            </td>
+        </tr>
+    </table>
+
+    <p>We see that with a lower spring constant, the constraints are more loosely enforced as the springs exert less force on the point masses to push or pull them into position. We see as a result a flatter and stretchier cloth surface as the shearing and structural springs allow for more movement of point masses into a comfortable resting state, and more sharp creases when bent due to the bending springs pulling or pushing less aggressively. As we increase to the default <code>5000 N/m</code>, we see that the cloth's final resting state is less flat and closer to the starting square shape than before. Additionally the increased bending constraint force makes the creases around the top more round and less sharply creased. As we increase the constant again up to <code>50000 N/m</code>, the cloth now is much more resistant to deformation. The sinking portion between the two pinned masses is less sunken by gravity as the springs more strictly enforce structural and shearing constraints so the cloth is hardly bent. The bending is more distributed through the whole of the cloth as seen in the small hills over the cloth's surface.</p>
+
+    <h3>Varying Density</h3>
+    <p>Varying density affects the masses of the individual point masses.</p>
+
+    <h4><code>density = 5 g / cm^2</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/pinned_2_d5.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/pinned_2_d5_s.png" width="500ox">
+            </td>
+        </tr>
+    </table>
+    <h4><code>density = 15 g / cm^2</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/pinned_2_5000_w.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/pinned_2_5000.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <h4><code>density = 30 g / cm^2</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/pinned_2_d30.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/pinned_2_d30_s.png" width="500px">
+            </td>
+        </tr>
+    </table>
+
+    <p>We see that with the low density cloth shows more creases in the cloth in relation to the other two. The deformation force on the point masses due to gravity is just weaker as <code>F = ma </code>, too weak to overcome the structural forces preventing the cloth from shearing or losing its structure, creating ripples along the cloth's surface. In layman's terms, the cloth is just too light to pull out the sheet. Increasing the density to the default <code>15 g/cm^2</code>, we see that now that the force due to gravity is strong enough on the masses to overcome the resistance to bending and shearing and pull the cloth down flatter. The sunken area between the pinned masses also sinks lower as the larger mass leads to a larger downward force. The effects are exaggerated further upon increasing the density to <code>30 g/cm^2</code>. The sunken arc sinks even deeper and the cloth is pulled even more strongly downwards, the center of the bottom of the cloth even beginning to bulge downwards under the force of gravity despite the forces of the constraint strings trying to maintain the cloth's shape.</p>
+
+    <h3>Varying Damping</h3>
+
+    <p>From the above equation, we see that damping limits the change between updates. Below are the results of using different damping constants:</p>
+    <h4><code>damping = 0.1</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/damping_1_1.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/damping_1_2.png" width="500ox">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part2/damping_1_3.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/damping_1_4.png" width="500px">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part2/damping_1_5.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <h4><code>damping = 0.2</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/damping_2_1.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/damping_2_2.png" width="500ox">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part2/damping_2_3.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/damping_2_4.png" width="500px">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part2/damping_2_5.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <h4><code>damping = 0.4</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/damping_4_1.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/damping_4_2.png" width="500ox">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part2/damping_4_3.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part2/damping_4_4.png" width="500px">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part2/damping_4_5.png" width="500px">
+            </td>
+        </tr>
+    </table>
+
+    <p>With a damping constant of <code>0.1</code>, the motion of the individual point masses is more exaggerated as the cloth seems to ripple and wave more while falling. The cloth also continues to swing past its resting position and back before coming to a rest as the damping is low so that changes between points are larger than default. Increasing damping to the default of <code>0.2</code>, the motion is less jelly like and more smooth, the changes in position scaled down more so that the cloth parts move more cohesively. The damping forces are preventing too big of changes in between updates. Increasing the damping further to <code>0.4</code> furthers this trend. The cloth now seems stiffer and makes much more gradual changes than before, falling more like a heavy sheet than a silky cloth.</p>
+
+    <h3>Resting state of <code>Pinned4.json</code></h3>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part2/pinned4_1.png" width="500px">
+                <figcaption>Resting state wireframe</figcaption>
+            </td>
+            <td>
+                <img src="./img/part2/pinned4_2.png" width="500px">
+                <figcaption>Resting state with shading</figcaption>
+            </td>
+        </tr>
+    </table>
+
+    <h2 align="middle">Part III: Collisions</h2>
+
+    <p>In part 3, collisions between the cloth and other surfaces can be handled. When a point mass collides with a surface, meaning that the point step in the last time step was on the opposite side of the object, we simply move the point mass back towards the point of intersection with an additional buffer of <code>SURFACE_OFFSET</code> so that the point is again on the correct side. Below shows the result of spherical collisions at different sprint constant values:</p>
+
+    <h3>Sphere Collisions</h3>
+
+    <h4><code>ks = 5000 N/m</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part3/sphere_5000_1.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part3/sphere_5000_3.png" width="500px">
+            </td>
+        </tr>
+    </table>
+
+    <h4><code>ks = 500 N/m</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part3/sphere_500_1.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part3/sphere_500_3.png" width="500px">
+            </td>
+        </tr>
+    </table>
+
+    <p>With the lower spring constant, like before, we see that the effect on gravity is much more apparent. The cloth appears stretchier and less bound to its starting structure as the spring forces generated are weaker than before. The point masses are able to bend and pull themselves more flat against the sphere than in the previous example.</p>
+
+    <h4><code>ks = 50000 N/m</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part3/sphere_50000_1.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part3/sphere_50000_3.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <p>With the larger spring constant, the opposite occurs. The cloth constraints become more strict as the springs now exert more force on the point masses. The bending constraints now overcome the force of gravity, forcing the cloth to point outwards rather than hang over the edge of the sphere, as well as make the cloth more rounded as opposed to creased from before. The shearing and structural springs also make the cloth less able to stretch itself float out over the sphere, resulting in the strange covering shape.</p>
+
+    <p>Below, the cloth falls to rest on a plane:</p>
+
+    <h3>Plane Collision</h3>
+    <img src="./img/part3/plane.png" width="500px">
+
+    <h2 align="middle">Part IV: Self-Collisions</h2>
+
+    <p>In the final part of this project, the cloth is now able to collide with itself so as to not pass through itself unrealistically. To avoid the naive implementation and poor performance of checking every point mass with every other point mass, we use spacial hashing to group points in the same volume and reduce the number of points needed to iterated through to check for collisions. The scene is partitioned into volumes with dimensions <code>w * h * t</code>,  where <code>w = 3 * width / num_width_points</code>, <code>h = 3 * height / num_height_points</code>, and <code>t = max( w, h)</code>. For each point, we calculate which volume it is in and map the volume to a float value. We insert the point into the spacial hash map with the float as the key. When checking for collisions, we then only need to check for points closer than <code>2 * thickness</code> apart in the same volume grouping. The cloth will now fold over itself rather than clipping:</p>
+
+    <h3>Cloth at various timesteps with default parameters</h3>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part4/self_1.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part4/self_2.png" width="500ox">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part4/self_3.png" width="500px">
+            </td>
+            <td>
+                <img src="./img/part4/self_4.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <p>We see that the cloth snakes and folds over itself upon reaching the plane.</p>
+
+    <h3>Varying <code>ks</code></h3>
+    <p>We can vary the spring constant and density of the cloth to observe some interesting effects.</p>
+
+    <h4><code>ks = 500</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part4/self_k_500_1.png" width="500ox">
+            </td>
+            <td>
+                <img src="./img/part4/self_k_500_2.png" width="500px">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part4/self_k_500_3.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <p>By decreasing the spring constant, we again reduce the effects of the structural, shearing, and bending constraints, allowing the cloth to be stretchier and crease more easily. The resulting cloth shows more smaller bends and folds than the default parameters above, coming to rest closer to the ground overall.</p>
+
+    <h4><code>ks = 50000</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part4/self_k_50000_1.png" width="500ox">
+            </td>
+            <td>
+                <img src="./img/part4/self_k_50000_2.png" width="500px">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part4/self_k_50000_3.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <p>By increasing the spring constant, we now do the opposite and make the constraints tighter. Now, as the bending springs exert more force, the cloth becomes stiffer and harder to bend or crease, making the curves as it hits the plane much rounder and larger than the previous images. Because now the cloth is harder to fold or crease, we see that it's final resting state has a much more squarely folded sheet with a flat surface and two main rounded folds.</p>
+
+    <h3>Varying Density</h3>
+
+    <p>Now by varying density, we are again essentially varying the mass of the point masses of the cloth.</p>
+
+    <h4><code>density = 5 g / cm^2</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part4/self_d_5_1.png" width="500ox">
+            </td>
+            <td>
+                <img src="./img/part4/self_d_5_2.png" width="500px">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part4/self_d_5_3.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <p>With a lower density, the cloth become lighter and more sensitive to constraint forces as the force due to gravity is less in comparison to a cloth with a larger density. This means that it is easier to move horizontally to find a lower energy resting place closer to the ground, resulting in the pattern seen above, where it spreads out relatively flat over the plane.</p>
+
+    <h4><code>density = 30 g / cm^2</code></h4>
+    <table>
+        <tr>
+            <td>
+                <img src="./img/part4/self_d_30_1.png" width="500ox">
+            </td>
+            <td>
+                <img src="./img/part4/self_d_30_2.png" width="500px">
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <img src="./img/part4/self_d_30_3.png" width="500px">
+            </td>
+        </tr>
+    </table>
+    <p>With a higher density, the effect of gravity is now much larger on every point mass. When the cloth begins to fold, the point masses are more inclined to stay where they fall as gravity pulls with a stronger force downwards now than some of the constraints can exert to push the cloth back out to a natural rest state. As a result, we see the cloth clumping more or less where it falls and more reluctant to spread out.</p>
+
+
+</body>
+</html>

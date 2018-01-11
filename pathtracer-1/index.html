@@ -1,0 +1,693 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+    <style>
+        body {
+            font-family: sans-serif;
+            font-weight: 100;
+        }
+
+        div.padded {
+            padding-top: 0px;
+            padding-right: 100px;
+            padding-bottom: 0.25in;
+            padding-left: 100px;
+        }
+
+        div.block {
+            padding: 10px 100px;
+            margin: auto 50px;
+            background-color: #1a1e24;
+            color: lightgoldenrodyellow;
+            border-bottom: 5px solid saddlebrown;
+            border-right: 5px solid saddlebrown;
+            line-height: 1.1em;
+        }
+
+        k {
+            color: deepskyblue;
+        }
+
+        c {
+            color: grey;
+        }
+
+        r {
+            color: orange;
+        }
+
+        figcaption {
+            font-size: 0.8em;
+        }
+
+        code {
+            font-size: 1.1em;
+            color: dodgerblue;
+        }
+
+    </style>
+    <title>Dillon Yao | CS 184</title>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8"/>
+    <link rel="stylesheet" type="text/css" href="style.css" media="screen"/>
+</head>
+<body>
+<br/>
+<h1 align="middle">Assignment 3: PathTracer</h1>
+<h2 align="middle">Dillon Yao, cs184-aai</h2>
+
+<div class="padded">
+    <p>In this project, I implemented a simple path tracer, capable of rendering images with global illumination and adaptive sampling to improve efficiency. To achieve realistic light behavior, we model light rays as mathematical rays. At a high level, we fire rays from a camera point into the scene until an intersection is found. There we sample rays to all lights in the scene to measure the direct lighting. Then we sample another ray into the scene representing indirect lighting and trace the bounced ray recursively.</p>
+    <p>In the main sample loop, we iterate over all pixels. To find the spectrum of a pixel, we sample points in the pixel, generating rays originating from the camera through the sampled point. We trace the ray throughout the scene until we find an intersection with a primitive. There we record the estimated direct and indirect lighting and take that as the sample value. We find intersections with triangles using the Möller Trumbore Algorithm and with spheres by solving the sphere intersection equation. To make this strategy practical for meshes with large numbers of primitives, we break the bounding box into a bounding volume hierarchy, splitting the box into a tree structure, meaning rays only need to test for intersection with a subset of objects rather than every object in the scene. To further improve the efficiency of the algorithm, adaptive sampling rates allow for pixels that converge early to quit the sample loop so as to not waste samples</p>
+
+    <h2 align="middle">Part 1: Ray Generation and Scene Intersection</h2>
+    <p>In part 1, I implemented the pixel sampling loop in <code>raytrace_pixel</code>, along with intersection test for
+        both triangle and sphere primitives.</p>
+
+    <h3>Task 1: Filing In the Sample Loop</h3>
+    <p>In the sampling loop, for a given pixel origin <code>(x, y)</code>, <code>ns_aa</code> samples are evaluated. In
+        each sample, a random offset <code>[0, 1]^2</code> is obtained through the pathtracer's <code>gridSampler</code>
+        (this offset is <code>(0.5, 0.5)</code> if <code>ns_aa == 1</code>). The sample point then this offset added to
+        the pixel's origin. We normalize the sample point into the range <code>[0, 1]^2</code> by dividing by point's x
+        value by the sampleBuffer's width, <code>sampleBuffer.w</code> and the point's y value by the sampleBuffer's
+        height, <code>sampleBuffer.h</code>:</p>
+
+    <div class="block">
+        <pre><k>Vector2d</k> origin = (x, y);
+<k>Vector2d</k> samplePoint = ns_aa == 1 ? origin + (0.5, 0.5) : origin + gridSampler->get_sample();
+samplePoint.x /= sampleBuffer.w;
+samplePoint.y /= sampleBuffer.h;</pre>
+    </div>
+
+    <p>This sample point is then passed to <code>camera->generate_ray</code>, returning a ray from the camera passing
+        through the sample point. Setting the ray's maximum depth to <code>max_ray_depth</code>, we now call <code>trace_ray</code>
+        to obtain the sampled Specturm that the pixel should display in the rendered image. This is added to a summing
+        variable. After all samples are made, we average return the average Specturm by dividing by the number of
+        samples performed.</p>
+
+    <div class="block">
+        <pre><k>Ray</k> ray = camera->generate_ray(samplePoint.x, samplePoint.y);
+ray.depth = max_ray_depth;
+<k>Spectrum</k> L = trace_ray(ray, true);
+sum += L;
+<c>// After all samples</c>
+<r>return</r> sum / num_samples;</pre>
+    </div>
+
+    <h3>Task 2: Generating Camera Rays</h3>
+    <p>To generate camera rays, the screen was considered to be a plane one unit away from the camera point as shown in
+        the following image:</p>
+
+    <div align="center">
+        <img src="images/part1/camera_diagram.png" width="500px"/>
+    </div>
+
+    <p>Here calculations are done in camera coordinates, where the <code>+y</code> axis points upwards from the camera,
+        the <code>+x</code> axis points to the right, and the <code>-z</code> axis points in the direction of the
+        camera's view. Using the camera's provided field of view angles <code>hFov</code> and <code>vFov</code>, we can
+        calculate the coordinates of the sensor plane using the formulas:</p>
+
+    <div class="block">
+        <pre><k>Vector3D</k> bot_l = (-tan(radians(hFov)*.5), -tan(radians(vFov)*.5), -1);
+<k>Vector3D</k> top_r = ( tan(radians(hFov)*.5),  tan(radians(vFov)*.5), -1);
+</pre>
+    </div>
+
+    <p>We convert the input scaled sample point from before into a point on the sensor plane defined by the points above
+        such that <code>(0, 0)</code> lies at the bottom left and <code>(1, 1)</code> lies on the top right. To do so,
+        we can just linearly interpolate using the input <code>(x, y)</code> pair:</p>
+
+    <div class="block">
+        <pre><k>double</k> sensor_x = bot_l.x + x * 2 * top_r.x;
+<k>double</k> sensor_y = bot_l.y + y * 2 * top_r.y;
+<k>Vector3D</k> sensorPoint = (sensor_x, sensor_y, -1);</pre>
+    </div>
+
+    <p>Because the camera lies at the origin of camera space, the direction vector of our ray is the same as just hte
+        sensorPoint. Converting to world coordinates and normalizing, we get our camera ray:
+    </p>
+
+    <div class="block">
+        <pre>Ray camera_ray = Ray(pos, c2w * sensorPoint);</pre>
+    </div>
+
+    <h3>Task 3: Intersecting Triangles</h3>
+    <p>To find whether or not a given ray intersects a triangle, I used the Möller Trumbore Algorithm, pictured below
+        from the lecture slides:</p>
+    <div align="center">
+        <img src="./images/part1/triangle_intersect_alg.png" width="400"/>
+    </div>
+    <p>We are given a ray r, the points of the triangle <code>p1, p2, p3</code>, as well as the corresponding vector normals <code>n1, n2, n3</code>. To implement the algorithm, we simple translate it into code, first finding all needed componenets:</p>
+
+    <div class="block">
+        <pre><k>Vector3D</k> e1(p2 - p1), e2(p3 - p1); <c>// Here the points are one indexed.</c>
+<k>Vector3D</k> s(r.o - p1), s1(cross(r.d, e2)), s2(cross(s, e1));</pre>
+    </div>
+
+    <p>And then performing the multiplication:</p>
+    <div class="block">
+        <pre><k>Vector3D</k> matrix(dot(s2, e2), dot(s1, s), dot(s2, r.d));
+<k>Vector3D</k> t_b1_b2 = matrix / dot(s1, e1);</pre>
+    </div>
+
+    <p>Using the resulting vector, we can obtain the barycentric coordinates of the intersection with the triangle plane. Should any of the coordinates be out of the range <code>[0, 1]</code> or t be out of the range <code>[r.min_t, r.max_t]</code>, we return there was no hit.</p>
+
+    <div class="block">
+        <pre><k>double</k> t = intersection.x;
+<k>double</k> alpha = intersection.y;
+<k>double</k> beta = intersection.z;
+<k>double</k> gamma = 1 - alpha - beta; <c>// gamma * p1 + alpha * p2 + beta * p3 yeilds the desired point</c></pre>
+    </div>
+
+    <p>Finally if there is a hit, we can populate the intersection with the relevant parameters, updating the ray's <code>max_t</code> and interpolating a normal vector if necessary:</p>
+    <div class="block">
+        <pre>isect->n = alpha * n2 + beta * n3 + gamma * n1;</k></pre>
+    </div>
+
+    <h3>Task 4: Intersecting Spheres</h3>
+    <p>Lastly for part 1, I implemented the intersection test for a sphere. Given the ray, center of the sphere, and radius of the sphere, we can derive the parameter t at which the ray intersects the sphere:</p>
+
+    <div class="block">
+        <code>r = r.o + t * r.d <c>// Formula for ray over parameter t</c></code> </br>
+        <code>(p - c)^2 - R^2 = 0 <c>// Points on sphere</c></code></br>
+        <code>(r.o + t * r.d - c)^2 - R^2 = 0 <c>// Substituting in the ray equation</c></code>
+    </div>
+
+    <p>This formula can be rearanged into the form: <code>at^2 + bt + c = 0</code> with coefficient values:</p>
+
+    <div class="block">
+        <pre><k>double</k> a = dot(r.d, r.d);
+<k>double</k> b = dot(2 * (r.o - o), r.d);
+<k>double</k> c = dot((r.o - o), (r.o - o)) - R * R;
+<k>double</k> determinant = b * b - 4 * a * c;</pre>
+    </div>
+
+    <p>If the determinant is negative, then we know there is no solution for the intersection of the ray with the sphere. Otherwise we solve using the quadratic formula for <code>t_pls</code> and <code>t_min</code>, returning the smaller of the two as <code>t1</code> and the larger as <code>t2</code> (if they are the same, then there is only one intersection and it doesn't matter which is which). Should <code>t1</code> be non-negative, then we know that is the closest intersection point with the sphere. Otherwise, we take <code>t2</code> if it is non-negative. Otherwise, we know then that the sphere lies behind the ray origin and no intersection occurred.</p>
+    <p>Finally we populate the intersection with the proper values and update the ray's <code>max_t</code>, obtaining the normal of the intersection by taking the point of intersection (Found by plugging the parameter back into the ray intersection), subtracting from the sphere's center, and normalizing.</p>
+
+    <h3>Renderings:</h3>
+
+    <div align="center">
+        <table style="width=100%">
+            <tr>
+                <td align="middle">
+                    <img src="images/part1/CBspheres_1_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">sky/CBspheres.dae</figcaption>
+                <td align="middle">
+                    <img src="images/part1/CBcoil_1_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">sky/CBcoil.dae (this one was very slow)</figcaption>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part1/CBgems_1_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">sky/CBgems.dae</figcaption>
+                <td align="middle">
+                    <img src="images/part1/CBteapot_1_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">meshedit/teapot.dae</figcaption>
+            </tr>
+        </table>
+    </div>
+
+    <h2 align="middle">Part 2: Bounding Volume Hierarchy</h2>
+    <p>To improve the efficiency of the pathtracer, in part 2, we break up the mesh into a bounding volume hierarchy so that a ray doesn't need to be tested against every primitive, instead searching down the bvh nodes with which it intersects until it reaches a node, where it then tests against the remaining privatives.</p>
+
+    <h3>Task 1: Constructing the BVH</h3>
+
+    <p>We start out with a single BVH node containing all the primitives in the mesh and find the bounding box of both the primitives and their centroids. If there are more primitives that the maximumt leaf size, we will split the primitives into two new nodes, using the midpoint of the longest axis as the deciding point. If a primitives centroid is less than the split point, then it will be pushed into the left node's vector, otherwise it gets pushed into the right node's, roughly evenly splitting the mesh into two halves along this axis. The pseudocode is below:</p>
+
+    <div class="block">
+        <pre><k>BBox</k> centroid_box, bbox;
+<r>for</r> (<k>Primitive</k> p in primitives) {
+    bbox.expand(p.bbox);
+    centroid_box.expand(p.bbox.centroid);
+}
+<r>if</r> (primatives.size() > max_leaf_size) {
+    <k>vector</k> left, right;
+    longest_axis_length = max(centroid_box.extent.x, centroid_box.extent.y, centroid_box.extent.z);
+    split_point = centroid_box.min.i + longest_axis_length / 2; <c>// i is x, y, or z according to longest_axis</c>
+    <r>for</r> (<k>Primitive</k> p in primitives) {
+        if (p.bbox.centroid.i < split_point) left.add(p);
+        else right.add(p);
+    }
+    node.left = construct_bvh(left, max_leaf_size);
+    node.right = construct_bvh(right, max_leaf_size);
+}</pre>
+    </div>
+
+    <p>To protect from the edge case in which all primitives wind up in the same node, which can happen if they share the same centroid, we add in an additional check. If we find either child node is empty, we just pop a primitive from the full node to the other.</p>
+
+    <div class="block">
+        <pre><r>if</r> (left.empty()) {
+    <k>Primitive</k> to_switch = right.pop();
+    left.push_back(to_switch);
+} <r>else if</r> (right.empty()) {
+    <k>Primitive</k> to_switch = left.pop();
+    right.push_back(to_switch);
+}</pre>
+    </div>
+
+    <p>Without this check, we could wind up with infinite recursion as the algorithm would place all the primitives into the same node, meaning the any subsequent recursive calls on that node would have the same primitives, never shrinking the number to reach the base case where there are fewer than  the maximum leaf size.</p>
+
+    <h3>Task 2: Intersecting BBox</h3>
+
+    <p>To decide whether or not we need to check a BVH node, we need to figure out if a ray intersects the node's bounding box. To do so, we treat the bounding box as an intersection of 3 slabs, each slab being made of two planes. For each slab, we find the time range for which the ray intersects the slab by finding the time of intersection with the two planes that make up the slab, using the following formula:</p>
+
+    <div align="center">
+        <img src="./images/part2/ray_plane_intersection_form.png" width="500px"/>
+    </div>
+
+    <p>Additionally, because the bounding box planes are axis aligned, their normal vectors isolate one component, x y or z, or the vectors they multiply, meaning we can simplify this into an equation of the form:</p>
+
+    <div align="center">
+        <img src="./images/part2/axis-aligned-form.png" width="150px"/>
+    </div>
+
+    <p>The equation above is for the zy slab as it's normal vectors are <code>(1, 0, 0)</code>, isolating the x components of the vectors it is dottet with. Having this, along with a point on both planes (<code>min</code> and <code>max</code>) we can then find the intersection range of a ray with the xy slab using the following pseudocode:</p>
+
+    <div class="block">
+        <pre><k>double</k> xyt0, xyt1;
+<r>if</r> (r.d.z == 0) {
+    <r>if</r> (min.z <= r.o.z && r.o.z <= max.z) {
+        xyt0 = -INFINITY;
+        xyt1 = INFINITY;
+    } <r>else</r> {
+        <r>return</r> false;
+    }
+} <r>else</r> {
+    xyt0 = (min - r.o).z / r.d.z;
+    xyt1 = (max - r.o).z / r.d.z;
+    if (xyt0 > xyt1) swap(xyt0, xyt1);
+}</pre>
+    </div>
+
+    <p>The first case is for the case where the ray is parallel to both planes. If the ray originates within the slab, then it always intersects the slab, otherwise, it'll never intersect with the slab. Otherwise we find the intersection times for both planes, making sure the range is ordered correctly. We repeat for all 3 slabs. We then test if there is a common intersectoin between the three ranges if all slabs intersect the ray:</p>
+
+    <div class="block">
+        <pre>t0 = max(xyt0, xzt0, yzt0);
+t1 = min(xyt1, xzt1, yzt1);
+<r>if</r> (t0i > t1i) <r>return</r> false;</pre>
+    </div>
+
+    <p>Finally, if we find a common intersection, then we update <code>t0</code> and <code>t1</code> if the intersection lies in that range, return true, that an intersection is found.</p>
+
+    <h3>Task 3: Intersecting BVHAccel</h3>
+
+    <p>Now with the ability to test a ray's intersection with a bounding box, we can write the accelerated intersection function. The algorithm first tests whether or not the ray of interest intersects the current BVH node, starting with the root. If no intersection occurs, then we return false, no intersection occured. Otherwise, we check if the intersection time lies within the ray's <code>min_t</code> and <code>max_t</code>. This speeds up the algorithm further so that we don't need to look at intersections that occur after the earliest known intersection. If the ray fails this test, we again return false. From here, if the node is a leaf node, we iterate through every primitive in the node and check for an intersection. If we just want to know whether or not an intersection occurs, we can stop at the first and return true. Otherwise, we must continue to search as the first found is not necessarily the earliest. Finally, if the node is not a leaf, we must then recurse on both the left and right nodes. Again, if we just want to know if there is an intersection, we can short circuit on either node, but if we wish to find the earlier, both nodes must be searched. In pseudocode:</p>
+
+    <div class="block">
+        <pre><r>if</r> (not node.bbox.intersect(ray, t0, t1)) <r>return</r> false;
+<r>if</r> (t1 < ray.min_t or t0 > ray.max_t) <r>return</r> false;
+<r>if</r> (node.is_leaf()) {
+    <r>for</r> (<k>Primitive</k> p in node.primitives) {
+        if (p.intersect(ray)) hit = true;
+    }
+} <r>else</r> {
+    hit = intersect(ray, node.L);
+    hit = intersect(ray, node.R) or hit;
+}
+<r>return</r> hit</pre>
+    </div>
+
+    <p>I had for a while an issue where some objects were being drawn out of order. I was puzzled for a while until I switched the order in which I made the two <code>intersect</code> calls. This seemed to replicate the problem on the other side of the scene. At this point I remembered that short-circuiting was a thing and so a hit in the first intersect call would mean the second node would not be teseted at all. Thus changing <code>intersect(ray, node.L) || intersect(ray, node.R)</code> to the code above fixed the issue.</p>
+
+    <h3>Renderings: </h3>
+
+    <div align="center">
+        <table style="width=100%">
+            <tr>
+                <td align="middle">
+                    <img src="images/part2/CBlucy_2_s1024" width="480px"/>
+                    <figcaption align="middle">sky/CBlucy.dae</figcaption>
+                    <img src="images/part2/CBmaxplank_2_s1024" width="480px"/>
+                    <figcaption align="middle">meshedit/maxplanck.dae</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part2/CBwall-e_2_s1024" width="480px"/>
+                    <figcaption align="middle">sky/wall-e.dae</figcaption>
+                    <img src="images/part2/CBblob_2_s1024" width="480px"/>
+                    <figcaption align="middle">sky/blob.dae</figcaption>
+                </td>
+            </tr>
+            <tr>
+
+            </tr>
+        </table>
+    </div>
+
+
+    <h2 align="middle">Part 3: Direct Illumination</h2>
+    <p>In part 3, I implemented the direct illumination function, allowing direct lighting effects like shadows to be displayed. The given skeleton code already calculates in local coordinate system for the intersection the hit point <code>hit_p</code> or the ray as well as the vector from the point to the camera <code>w_out</code>.</p>
+
+    <p>For every scene light in the scene, we take <code>ns_area_light</code> sample rays (unless the light is a delta light, where we only take 1). For each sample, we sample an incoming vector using <code>sample_L</code>, returning the incoming vector from the hit point outwards in world coordinates <code>wi</code>, the distance to the light, the probability of taking the sample, and the incoming radiance from the sampled direction. We then convert the incoming vector to local coordinates and check to make sure the intersection occurs in the direction of the ray (so as to not be behind the hit point) by ensuring the incoming vector's <code>z</code> component is non-negative.</p>
+
+    <div class="block">
+        <pre><r>for</r> (sceneLight in lights) {
+    <k>int</k> samples = 1 <r>if</r> sceneLight.is_delta_light() else ns_area_light;
+    <k>Spectrum</k> sample_sum;
+    <k>for</k> (i = 0, 1, ..., samples) {
+        <k>Spectrum</k> Li, <k>Vector3D</k> wi, <k>float</k> pdf, distToLight = sceneLight.sampleL(hit_p);
+        <k>Vector3D</k> w_in = w2o * wi; <c>// Converting to local coordinates</c>
+        <r>if</r> (w_in.z < 0) <r>continue</r>;
+        ...</pre>
+    </div>
+
+    <p>Now, having a ray to the light, we need to make sure that the path to the light is not obstructed. We create a shadow ray, originating at the hit point with a direction vector towards the light: <code>shadow_ray = Ray(EPS_D * wi + hit_p, wi, distToLight)</code>. We offset the hit point by a factor <code>EPS_D</code> to make sure the shadow ray doesn't intersect the hit point itself. We also set it's max distance to be the distance to the light, as we don't care about intersections after the ray has reached the light. If we find that there is any intersection between the shadow ray and the light, we know that the sampled incoming radiance does not contribute to the specturm at the hit point as the light from the scene light is obstructed, so we continue the loop. If we find no obstacle, we convert the radiance into an irradiance by multiplying by cosine of the angle between the normal at the hit point and the incoming light vector, which is just their dot product and then multiplying by the bsdf evaluated with <code>w_in</code> and <code>w_out</code> to get the sampled outgoing radiance at the point. Finally we need to divide by the returned probability from before to account for the fact the probability distribution can bias the sampling towards certain parts of the light. This ensures that samples that may be biased to have higher probabilities don't get overweighed in the sum and samples that may be biased to have lower probabilities won't be underweighted.</p>
+
+    <div class="block">
+        <pre>        ...
+        <k>Ray</k> shadow_ray(EPS_D * wi + hit_p, wi, distToLight);
+        <r>if</r> (not bvh.intersect(shadow_ray)) <r>continue</r>;
+        <k>Spectrum</k> f = bsdf(w_out, w_in);
+        sample_sum += f * Li * fabs(dot(normal, wi)) / pdf;
+    }
+    L_out += sample_sum / samples;
+}</pre>
+    </div>
+
+    <p>We sum the sampled radiances and then divide by the number of samples made to get and average radiance from the hit point for the scene light, which is accumulated into <code>L_out</code> over all scene lights. This <code>L_out</code> value is then returned as the direct lighting estimate.</p>
+
+    <h3>Renderings with Direct Lighting</h3>
+
+    <div align="center">
+        <table style="width=100%">
+            <tr>
+                <td align="middle">
+                    <img src="images/part3/CBspheres_3_s1024_l4.png" width="480px"/>
+                    <figcaption align="middle">sky/CBspheres_lambertian.dae, s=1024, l=4</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part3/CBbunny_3_s1024_l4.png" width="480px"/>
+                    <figcaption align="middle">sky/CBbunny.dae, s=1024, l=4</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part3/dragon_3_s1024_l4.png" width="480px"/>
+                    <figcaption align="middle">sky/dragon.dae, s=1024, l=4</figcaption>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <h3>Comparing Soft Shadow Noise Levels (sky/CBspheres.dae, s=1)</h3>
+
+    <div align="center">
+        <table style="width=100%">
+            <tr>
+                <td align="middle">
+                    <img src="images/part3/CBspheres_3_s1_l1.png" width="480px"/>
+                    <figcaption align="middle">1 light sample</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part3/CBspheres_3_s1_l2.png" width="480px"/>
+                    <figcaption align="middle">2 light samples</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part3/CBspheres_3_s1_l4.png" width="480px"/>
+                    <figcaption align="middle">4 light samples</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part3/CBspheres_3_s1_l8.png" width="480px"/>
+                    <figcaption align="middle">8 light samples</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part3/CBspheres_3_s1_l16.png" width="480px"/>
+                    <figcaption align="middle">16 light samples</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part3/CBspheres_3_s1_l64.png" width="480px"/>
+                    <figcaption align="middle">64 light samples</figcaption>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <p>We can easily see that at just 1 sample, there is a large amount of noise in the soft shadow as the one sample makes up the entire value of the shadow at any given point. Should the sampled ray be obstructed, then the point is dark, even if another ray from the pint can easily reach the light. As the number of light samples increases, we see that the shadow eventually converges and the noise becomes drastically reduced, reflecting the true value of the soft shadow if we were to actually integrate over the hemisphere at any point. Averaging the values of many rays paints a more accurate rendering of the scene as the many samples means that the monte carlo integration is more representative of it's expected value, the variance declining as the sample size rises.</p>
+
+
+    <h2 align="middle">Part 4: Indirect Illumination</h2>
+    <p>In part 4, I implemented the addition of indirect lighting and their contributions to the radiance of a point, allowing for bounced light and color bleeding.</p>
+
+    <p>Again, like in part 3, we already have the hit point, <code>hit_p</code>, and the outgoing vector from the hit point to the camera in local coordinates <code>w_out</code>. At this point, we take another sample outwards using the <code>bsdf->sample_f</code> function, taking in the outgoing vector <code>w_out</code> and returning a sampled incoming radiance direction vector <code>w_in</code>, the probability of choosing that sample, and the evaluation of the bsdf at <code>w_out</code>, <code>w_in</code>.</p>
+
+    <div class="block">
+        <pre><k>Spectrum</k> f, <k>Vector3D</k> w_in, <k>float</k> pdf = bsdf.sample_f(w_out);</pre>
+    </div>
+
+    <p>Next we need to decide on the russian roulette termination probability based on the reflectance of the returned BSDF spectrum. The higher the reflectance, the less likely we want the ray to terminate as indirect lighting will have a greater effect on the point's spectrum. As suggested I also scaled the reflectance to ensure that the probability is not too low and rays get terminated overly soon. Using the <code>coin_flip</code> method, we decide whether or not to continue tracing.</p>
+
+    <div class="block">
+        <pre><k>float</k> termination_prob = 1 - clamp(f.illum() * 15 + 0.05, 0, 1);
+<r>if</r> (coin_flip(termination_prob) <r>return</r> <k>Spectrum</k>(0, 0, 0);</pre>
+    </div>
+
+    <p>If we continue tracing, we created a new ray representing the direction of the contributing indirect light, again modifying the origin by <code>EPS_D</code> to avoid instantly intersecting with the same hti point. Calling <code>trace_ray</code>, we recursively trace this ray and get an approximation for the incoming radiance. We then convert the incoming radiance again into an irradiance as in part 3 by multiplying by the dot product between the normal and the incoming radiance direction vector. We then convert this into an estimate of the outgoing radiance from the point by multiplying by the BSDF spectrum from before and dividing by the probability of sampling the <code>w_in</code> direction as well as the probability of not terminating (or 1 minus the termination probability). This again accounts for possible bias in the russian roulette termination probability.</p>
+
+    <div class="block">
+        <pre><k>Vector3D</k> wi = o2w * w_in; <c>// Converting from local to world coordinates</c>
+wi.normalize();
+<k>Ray</k> bounced(EPS_D * wi + hit_p, wi);
+bounced.depth = r.depth - 1;
+<r>return</r> trace_ray(bounced, isect.bsdf->is_delta()) * f * fabs(dot(wi, isect.n)) / (pdf * (1 - tpdf));</pre>
+    </div>
+
+    <p>We set the bounced ray's depth to 1 less than the input ray's depth to ensure termination and we don't trace recursively too many times.</p>
+
+    <h3>Renderings with Global Illumination</h3>
+
+    <div align="center">
+        <table style="width=100%">
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBspheres_4_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">sky/CBspheres_lambertian.dae, s=1024, l=4, m=5</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">sky/CBbunny.dae, s=1024, l=4, m=5</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/banana_4_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">keenana/banana.dae, s=1024, l=4, m=5</figcaption>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <h3>Direct Illumination vs Indirect Illumination</h3>
+
+    <div align="center">
+        <table style="width=100%">
+            <tr>
+                <th>Direct Only</th>
+                <th>Indirect Only</th>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="./images/part4/CBspheres_4_dir_s1024_l4_m5.png" width="480"/>
+                    <figcaption></figcaption>
+                </td>
+                <td align="middle">
+                    <img src="./images/part4/CBspheres_4_indir_s1024_l4_m5.png" width="480"/>
+                    <figcaption></figcaption>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <p>In the direct image, only points with a direct path to the light are illuminated, meaning many areas are darker or even completely in darkness without the contribution from indirect lighting. We see in the image with indirect illumination, the light is much more distributed over the image as the points spectrums are completely dependent on bounced light only. We see the indirect image lacks the brightness in lit areas from the direct illumination photo as the light loses evergy after bouncing at angles, lacking the amount energy from that first direct bounce shown in the direct image.</p>
+
+    <h3>Comparison of Max Ray Depths with sky/CBbunny.dae (s=1028, l=4)</h3>
+    <div align="center">
+        <table style="width=100%">
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s1028_l4_m0.png" width="480px"/>
+                    <figcaption align="middle">max_ray_depth = 0</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s1028_l4_m1.png" width="480px"/>
+                    <figcaption align="middle">max_ray_depth = 1</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s1028_l4_m2.png" width="480px"/>
+                    <figcaption align="middle">max_ray_depth = 2</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s1028_l4_m3.png" width="480px"/>
+                    <figcaption align="middle">max_ray_depth = 3</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s1028_l4_m4.png" width="480px"/>
+                    <figcaption align="middle">max_ray_depth = 4</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_s1024_l4_m100.png" width="480px"/>
+                    <figcaption align="middle">max_ray_depth = 100</figcaption>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <p>We see that with only direct lighting (m=0), no bounced lighting is included. The ceiling and areas underneath the rabbit are completely dark as they are out of direct view of the light, even though in reality light bouncing off the walls and floor should partially illuminate them. As we increase the max ray depth to 1, we see a great deal of improvement. The ceiling is now visible as well as the underside of the rabbit. We see the area underneath the rabbit's front paws and rear are still very dark as a single bounce likely was not able to reach a light. Increasing the max depth to 2, we now see that the dark area is much improved. This trend continues with more bounces, the shadow under the rabbit's rear also becoming more gradual as the increased bounces allow a path to be found to the light source. We can also see the trend in the change of the ceiling corners and edges as the brightness generally increases as the max ray depth increases.</p>
+
+    <p>Additionally, we also see that as the max ray depth increases, the amount of color bleeding on the bunny and the bunny's shadow increases as more bounced rays from the walls contributes to the color on the points.</p>
+
+    <h3>Comparison of Various Sample Rates (l=4, m=5)</h3>
+
+    <div align="center">
+        <table style="width=100%">
+            <tr>
+                <td align="middle">sky/CBspheres.dae</td>
+                <td align="middle">sky/CBbunny.dae</td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBspheres_4_s1_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">1 sample</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s1_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">1 sample</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBspheres_4_s2_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">2 samples</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s2_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">2 samples</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBspheres_4_s4_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">4 samples</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s4_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">4 samples</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBspheres_4_s8_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">8 samples</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s8_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">8 samples</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBspheres_4_s16_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">16 samples</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s16_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">16 samples</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBspheres_4_s64_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">64 samples</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s64_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">64 samples</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part4/CBspheres_4_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">1024 samples</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part4/CBbunny_4_s1024_l4_m5.png" width="480px"/>
+                    <figcaption align="middle">1024 samples</figcaption>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <p>With only a single sample, there is a very large amount of noise in the image as the variance with just one sample is high. As we increase the number of samples, we see that the quality of the image improves as the pixel spectrums converge. Their variance drops as the number of samples increases and we get close to their expected values, meaning more realistic and clearer renders with less noise. We see that the noise is still apparent up until 64 samples, but at 1024 samples per pixel, it's much harder to tell it's a rendered image as there is so little noise.</p>
+
+    <p>In this part, I had some trouble with having the spheres be darker than in the reference image. It took a while to locate the issue, but it turns out that I had used the <code>norm()</code> function, which does not modify the vector, in the sphere intersection code rather than <code>normalize()</code>, which actually normalizes the vector. Switching out the code quickly remedied the issue.</p>
+
+
+    <h2 align="middle">Part 5: Adaptive Sampling</h2>
+
+    <p>We can make a small adjustment to the <code>raytrace_pixel</code> function so that we can stop short of using the full number of samples on pixels that converge quickly, making our pathtracer more efficient. To implement the algorithm, we need to keep track of two variables, <code>s1</code>, a running sum of the illuminances of the samples, and <code>s2</code>, a running total of the squares of the illuminances. Using these values, we can calculate the mean and variance of the pixel's value and use it to decide on whether or not the pixel has converged. We can then add this additional code in each sample after our original code.</p>
+
+    <div class="block">
+        <pre><k>float</k> illum = sample.illum();
+s1 += illum;
+s2 += illum * illum;
+<r>if</r> ((n-1) % samplePerBatch == 0 && n != 1) { <c>// n is the current number of samples</c>
+    <k>float</k> mean = s1 / n;
+    <k>float</k> var = (1.f / (n - 1)) * (s2 - (s1 * s1) / n);
+    <k>double</k> I = 1.96 * sqrt(var) / sqrt(n);
+    <r>if</r> (I <= max_tolerance * mean) <r>break</r>;
+}
+        </pre>
+    </div>
+
+    <p><code>I</code> here is a measure of the pixel's convergence. If <code>I</code> falls under the threshold <code>max_tolerance * mean</code>, we can with a large amount of confidence say that the pixel's value has converged and we can quit sampling and break out of the for loop. To prevent the overhead from getting too large, we only check for this condition every <code>samplePerBatch</code> samples (and not on the first sample).</p>
+
+    <div align="center">
+        <table style="width=100%">
+            <tr>
+                <td align="middle">
+                    <img src="images/part5/bunny.png" width="480px"/>
+                    <figcaption align="middle">sky/CBbunny.dae rendering, s=2048, a=64, 0.05, m=5</figcaption>
+                </td>
+                <td>
+                    <img src="images/part5/bunny_rate.png" width="480px"/>
+                    <figcaption align="middle">sky/CBbunny.dae sampling rate</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part5/wall-e_adaptive_s2048_a64-05_l1_m5.png" width="480px"/>
+                    <figcaption align="middle">sky/wall-e.dae rendering, s=2048, a=64, 0.05, m=5</figcaption>
+                </td>
+                <td>
+                    <img src="images/part5/wall-e_adaptive_s2048_a64-05_l1_m5_rate.png" width="480px"/>
+                    <figcaption align="middle">sky/wall-e.dae sampling rate</figcaption>
+                </td>
+            </tr>
+            <tr>
+                <td align="middle">
+                    <img src="images/part5/dragon_adaptive_s2048_a64-05_l1_m5.png" width="480px"/>
+                    <figcaption align="middle">sky/dragon.dae rendering, s=2048, a=64, 0.05, m=5</figcaption>
+                </td>
+                <td align="middle">
+                    <img src="images/part5/dragon_adaptive_s2048_a64-05_l1_m5_rate.png" width="480px"/>
+                    <figcaption align="middle">sky/dragon.dae sampling rate</figcaption>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <p>In this part, I had a bug where when the number of samples got very large, the resulting render would be much darker than it should have been. This turned out to be because I had been always dividing by the total number of samples to average the spectrum, even when the pixel converged early. This meant that for renders with many samples, the brightness of the pixels that converge quickly would be severely dampened, divided by a huge number. After Austin helped point out the error at the project party, it was quickly remedied by just dividing by the true number of samples.</p>
+
+</div>
+</body>
+</html>
+
+
+
+
